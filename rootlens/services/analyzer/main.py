@@ -8,6 +8,8 @@ import httpx
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from week5 import create_tables, fetch_snapshot, persist_snapshot, anomaly_rule
+from week6 import create_week6_tables, preprocess, apply_labels, parse_time
 
 
 DB_PATH = "data/rootlens.db"
@@ -72,6 +74,9 @@ def initialise():
                 now(),
             ),
         )
+
+        create_tables(db)
+        create_week6_tables(db)
 
         # v4 used Jaeger's root route, although Astronomy Shop serves the UI below /jaeger/ui.
         legacy = db.execute("SELECT jaeger_url FROM connections WHERE id = 1").fetchone()
@@ -249,3 +254,110 @@ def dashboard():
             ],
         },
     }
+
+
+# Week 5: live, persisted baseline dataset (independent of the dashboard UI).
+@app.post("/week5/collect")
+async def week5_collect():
+    snapshot = await fetch_snapshot(settings())
+    with connection() as db:
+        run_id = persist_snapshot(db, snapshot)
+    return {"run_id": run_id, **snapshot}
+
+
+@app.get("/week5/samples")
+def week5_samples(limit: int = 100):
+    limit = min(max(limit, 1), 1000)
+    with connection() as db:
+        rows = db.execute("SELECT * FROM telemetry_samples ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [{**dict(r), "payload": __import__("json").loads(r["payload"])} for r in rows]
+
+
+@app.get("/week5/quality")
+def week5_quality():
+    with connection() as db:
+        total = db.execute("SELECT COUNT(*) FROM telemetry_samples").fetchone()[0]
+        missing = db.execute("SELECT COUNT(*) FROM telemetry_samples WHERE service='' OR metric='' OR collected_at='' OR value IS NULL").fetchone()[0]
+        by_source = [dict(r) for r in db.execute("SELECT source, COUNT(*) AS count FROM telemetry_samples GROUP BY source")]
+        last_run = db.execute("SELECT * FROM collection_runs ORDER BY id DESC LIMIT 1").fetchone()
+    return {"total_samples": total, "missing_required_fields": missing,
+            "by_source": by_source, "last_run": dict(last_run) if last_run else None,
+            "note": "Kaynak erişimi ile gerçek log/trace içeriği doğrulaması farklıdır."}
+
+
+@app.get("/week5/baseline")
+def week5_baseline(metric: str = "request_rate", threshold: float = 10.0, limit: int = 100):
+    # Explicit threshold; demonstration only, not a trained anomaly model.
+    limit = min(max(limit, 1), 1000)
+    with connection() as db:
+        rows = db.execute("SELECT * FROM telemetry_samples WHERE metric=? ORDER BY id DESC LIMIT ?", (metric, limit)).fetchall()
+    return {"metric": metric, "threshold": threshold, "method": "fixed-threshold",
+            "results": [{"service": r["service"], "collected_at": r["collected_at"],
+                         "value": r["value"], **anomaly_rule(metric, r["value"], threshold)} for r in rows]}
+
+
+# Week 6: cleaning, service/time alignment, explicit experiment labels.
+from fastapi import HTTPException
+from typing import Literal, Optional
+
+class ExperimentLabel(BaseModel):
+    start_at: str
+    end_at: str
+    service: str
+    label: Literal['normal', 'anomaly']
+    root_cause_service: Optional[str] = None
+    scenario: str
+
+
+@app.post('/week6/labels')
+def week6_add_label(item: ExperimentLabel):
+    start, end = parse_time(item.start_at), parse_time(item.end_at)
+    if not start or not end or start >= end:
+        raise HTTPException(422, 'Geçerli saat dilimli start_at ve end_at girin; start_at < end_at olmalı')
+    if not item.service.strip() or not item.scenario.strip():
+        raise HTTPException(422, 'service ve scenario boş olamaz')
+    if item.label == 'normal' and item.root_cause_service:
+        raise HTTPException(422, 'Normal senaryoda root_cause_service girilmemeli')
+    with connection() as db:
+        cursor = db.execute("""INSERT INTO experiment_labels
+          (start_at, end_at, service, label, root_cause_service, scenario, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)""",
+          (start.isoformat(), end.isoformat(), item.service.strip(), item.label,
+           (item.root_cause_service or '').strip() or None, item.scenario.strip(), now()))
+        return {'id': cursor.lastrowid, 'status': 'saved', 'note': 'Etiket deney kaydıdır; model tahmini değildir.'}
+
+
+@app.get('/week6/labels')
+def week6_labels():
+    with connection() as db:
+        return [dict(r) for r in db.execute('SELECT * FROM experiment_labels ORDER BY id DESC LIMIT 500')]
+
+
+@app.get('/week6/dataset')
+def week6_dataset(bucket_seconds: int = 60, limit: int = 5000):
+    if not 10 <= bucket_seconds <= 3600:
+        raise HTTPException(422, 'bucket_seconds 10-3600 arasında olmalı')
+    if not 1 <= limit <= 20000:
+        raise HTTPException(422, 'limit 1-20000 arasında olmalı')
+    with connection() as db:
+        # Latest observations; bounded for reproducible, responsive demo.
+        rows = [dict(r) for r in db.execute('SELECT * FROM telemetry_samples ORDER BY id DESC LIMIT ?', (limit,))]
+        labels = [dict(r) for r in db.execute('SELECT * FROM experiment_labels')]
+    windows, stats = preprocess(rows, bucket_seconds)
+    apply_labels(windows, labels)
+    return {'method': 'service-and-UTC-time-window-alignment', 'bucket_seconds': bucket_seconds,
+            'statistics': stats, 'windows': windows,
+            'note': 'Sadece kaydedilmiş gerçek örnekler. all/unknown servisleri eşleştirmeye alınmaz. '
+                    'Eksik kaynaklar açıkça belirtilir; üretilmez. Etiketler yalnızca manuel deney kayıtlarından gelir.'}
+
+
+@app.get('/week6/quality')
+def week6_quality(bucket_seconds: int = 60):
+    data = week6_dataset(bucket_seconds=bucket_seconds)
+    windows = data['windows']
+    return {'statistics': data['statistics'], 'total_windows': len(windows),
+            'three_source_windows': sum(len(w['sources_present']) == 3 for w in windows),
+            'single_source_windows': sum(len(w['sources_present']) == 1 for w in windows),
+            'unlabeled_windows': sum(w['label'] == 'unlabeled' for w in windows),
+            'conflicting_label_windows': sum(w['label'] == 'conflict' for w in windows),
+            'warning': 'Kaynak erişimi, gerçek log/trace olaylarının toplandığını kanıtlamaz.'}
