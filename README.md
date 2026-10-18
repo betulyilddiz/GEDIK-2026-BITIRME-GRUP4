@@ -1,601 +1,291 @@
-# 🔍 RootLens
+# RootLens — Mikroservislerde Anomali Tespiti ve Kök Neden Analizi
 
-## Mikroservis Sistemlerinde Çok Kaynaklı Telemetri Verileri ile Anomali Tespiti ve Otomatik Kök Neden Analizi
+RootLens, mikroservis mimarisine sahip uygulamalarda oluşan performans sorunlarını ve hataları **metrik, log ve trace verilerini birlikte kullanarak** incelemek amacıyla geliştirilen bir bitirme projesidir.
 
-### 🎓 Proje Bilgileri
+Projenin nihai hedefi, sistemdeki anormal davranışları otomatik tespit etmek ve soruna neden olabilecek servisleri öncelik sırasına göre belirlemektir.
 
--   **Kurum:** İstanbul Gedik Üniversitesi
--   **Bölüm:** Bilgisayar Mühendisliği
--   **Ders:** MFK420 -- Mezuniyet Projesi ve Tezi
--   **Danışman:** Dr. Öğr. Üyesi Hikmet Canlı
--   **Proje Ekibi:** Betül Yıldız, Fatıma İsalı, Muhammed Emir Tel
+**Mevcut durum:** Projenin 5. ve 6. hafta çalışmaları kapsamında telemetri toplama, veri kalitesi kontrolü, başlangıç düzeyi eşik tabanlı analiz, zaman pencerelerine göre veri birleştirme ve deney etiketleme altyapısı geliştirilmiştir. Otomatik anomali tespiti ve kök neden analizi sonraki geliştirme aşamalarıdır.
 
-------------------------------------------------------------------------
+## 1. Projenin Amacı
 
-## 📌 Proje Nedir?
+Bir mikroservis uygulamasında hata oluştuğunda sorunun hangi servisten kaynaklandığını bulmak zor olabilir. Bir servisteki problem, diğer servislerin performansını da etkileyebilir.
 
-**RootLens**, mikroservis tabanlı sistemlerde oluşan anormal
-davranışları tespit etmeyi ve problemin olası kök nedenini belirlemeyi
-amaçlayan bir analiz platformudur.
+RootLens şu sorulara cevap verebilecek bir sistem geliştirmeyi amaçlar:
 
-Mikroservis sistemlerinde bir işlem birçok farklı servisten geçebilir.
-Bu nedenle bir hata oluştuğunda problemin hangi servisten
-kaynaklandığını bulmak zorlaşabilir.
+- Sistemde normal dışı bir durum var mı?
+- Hangi servisler bu durumdan etkileniyor?
+- Problem ne zaman başladı?
+- Metrik, log ve trace verileri birlikte değerlendirildiğinde hangi servis olası kök neden olabilir?
 
-RootLens temel olarak şu soruya cevap vermeyi hedefler:
+## 2. Sistem Mimarisi
 
-> **Sistemde ne sorun var, nerede başladı ve olası nedeni nedir?**
+Proje, test ortamı olarak OpenTelemetry Demo uygulaması **Astronomy Shop**'u kullanır.
 
-------------------------------------------------------------------------
+Veri akışı:
 
-## 🎯 Projenin Amacı
-
-RootLens ile:
-
--   Mikroservislerin sağlık durumunun izlenmesi,
--   **Metrics, logs ve traces** verilerinin toplanması,
--   Normal dışı davranışların tespit edilmesi,
--   Farklı telemetri kaynaklarının birlikte değerlendirilmesi,
--   Problemin olası kök nedeninin belirlenmesi,
--   Sonuçların tek bir dashboard üzerinden gösterilmesi
-
-hedeflenmektedir.
-
-------------------------------------------------------------------------
-
-## 🔄 Sistem Nasıl Çalışıyor?
-
-Proje iki ana bölümden oluşmaktadır:
-
--   **Astronomy Shop:** Analiz ettiğimiz mikroservis test sistemi.
--   **RootLens:** Telemetri verilerini analiz etmek için geliştirdiğimiz
-    platform.
-
-``` text
-ASTRONOMY SHOP
-Test ettiğimiz mikroservis sistemi
-        │
-        │ Telemetri üretir
-        ▼
-OPENTELEMETRY
-Telemetriyi toplar
-        │
-        ├─────────────┬─────────────┐
-        ▼             ▼             ▼
-   PROMETHEUS     OPENSEARCH      JAEGER
-    Metrics          Logs          Traces
-        │             │             │
-        └─────────────┴─────────────┘
-                      │
-                      ▼
-              ROOTLENS ANALYZER
-               Verileri işler
-                      │
-                      ▼
-                ANOMALİ TESPİTİ
-                      │
-                      ▼
-              KÖK NEDEN ANALİZİ
-                      │
-                      ▼
-              ROOTLENS DASHBOARD
-          Sonucu kullanıcıya gösterir
+```text
+Astronomy Shop
+    |
+    | Mikroservislerin çalışması ve test işlemleri
+    v
+Metrik + Log + Trace
+    |
+    v
+OpenTelemetry Collector
+    |
+    +----> Prometheus  (Metrikler)
+    |
+    +----> OpenSearch  (Loglar)
+    |
+    +----> Jaeger      (Trace verileri)
+                  |
+                  v
+           RootLens Backend
+                  |
+       +----------+----------+
+       |                     |
+       v                     v
+  Veri Toplama          Veri Kalitesi
+       |                     |
+       +----------+----------+
+                  |
+                  v
+       Zaman Pencerelerine Göre
+           Veri Birleştirme
+                  |
+                  v
+          Deney Etiketleme
+                  |
+                  v
+      Anomali Tespiti ve RCA
+       (Gelecek aşamalar)
+                  |
+                  v
+          RootLens Dashboard
 ```
 
-### Kısacası kim ne yapıyor?
+**Not:** Şema projenin hedef mimarisini gösterir. Bütün aşamalar henüz tamamlanmamıştır.
 
--   **Astronomy Shop** → Analiz edeceğimiz sistemi ve telemetri
-    verilerini üretir.
--   **OpenTelemetry** → Mikroservislerden telemetriyi toplar.
--   **Prometheus** → Metrik verilerini tutar ve sorgulamamızı sağlar.
--   **OpenSearch** → Log verilerini tutar ve sorgulamamızı sağlar.
--   **Jaeger** → Bir isteğin servisler arasında izlediği yolu (trace)
-    gösterir.
--   **RootLens Analyzer** → Bu verileri işleyen ve analiz eden bizim
-    geliştirdiğimiz bölümdür.
--   **RootLens Dashboard** → Sistem durumunu ve analiz sonuçlarını
-    kullanıcıya gösteren arayüzümüzdür.
--   **Docker / Docker Compose** → Bütün servisleri container'lar halinde
-    birlikte çalıştırmamızı sağlar.
+## 3. Kullanılan Teknolojiler
 
-------------------------------------------------------------------------
+| Teknoloji | Görevi |
+|---|---|
+| Docker ve Docker Compose | Servisleri container ortamında çalıştırmak |
+| Astronomy Shop | Test edilecek mikroservis uygulaması |
+| OpenTelemetry | Telemetri verilerini üretmek ve iletmek |
+| Prometheus | Metrik verilerini sorgulamak |
+| OpenSearch | Log verilerini sorgulamak |
+| Jaeger | Servisler arasındaki istekleri ve trace verilerini incelemek |
+| Python / FastAPI | RootLens analiz API'sini geliştirmek |
+| SQLite | Toplanan örnekleri ve deney etiketlerini saklamak |
+| React | RootLens kullanıcı arayüzünü geliştirmek |
+| Pytest | Python birim testlerini çalıştırmak |
 
-## 🛒 Astronomy Shop Nedir ve Neden Kullanıyoruz?
+## 4. Proje Klasör Yapısı
 
-**Astronomy Shop**, OpenTelemetry tarafından geliştirilen açık kaynaklı
-bir mikroservis demo uygulamasıdır. **RootLens ekibi tarafından
-geliştirilmemiştir.**
-
-RootLens'i gerçekçi bir mikroservis sistemi üzerinde geliştirmek ve test
-etmek için kullanıyoruz. İçerisinde Frontend, Cart, Checkout, Payment,
-Shipping, Product Catalog, Recommendation ve Email gibi birbirleriyle
-haberleşen servisler bulunur.
-
-``` text
-Astronomy Shop = Analiz edilen mikroservis sistemi
-RootLens       = Analizi yapan bizim sistemimiz
+```text
+rootlens/
+├── frontend/
+│   └── src/
+├── services/
+│   ├── analyzer/
+│   │   ├── main.py
+│   │   ├── week5.py
+│   │   ├── week6.py
+│   │   ├── test_analyzer.py
+│   │   ├── test_week5.py
+│   │   ├── test_week6.py
+│   │   ├── requirements.txt
+│   │   └── Dockerfile
+│   ├── order/
+│   └── payment/
+├── docker-compose.yml
+├── otelcol-config.yml
+├── otelcol-config-check.yml
+└── README.md
 ```
 
--   **Resmî proje:**
-    https://github.com/open-telemetry/opentelemetry-demo
--   **Dokümantasyon:** https://opentelemetry.io/docs/demo/
+`astronomy-shop/` klasörü ana proje dizininde test ortamını içerir.
 
-------------------------------------------------------------------------
+Yerel veritabanları, Python önbellekleri ve yedek dosyalar kaynak kod deposuna eklenmemelidir.
 
-## 📊 Veriler Nereden Geliyor?
+## 5. Kurulum ve Çalıştırma
 
-Projede sabit bir veri seti kullanılmamaktadır. Veriler, çalışan
-Astronomy Shop mikroservislerinin oluşturduğu **telemetri verilerinden**
-elde edilmektedir.
+### Gereksinimler
 
-### 📈 Metrics
+- Docker Desktop
+- Docker Compose
+- Git
+- Geliştirme ortamında gerekli olduğunda Python ve Node.js
 
-Sistemin sayısal durumunu gösterir. Örneğin istek süresi, hata oranı ve
-servis performansı.
+### Adım 1 — Astronomy Shop'u çalıştırma
 
-**Neden kullanıyoruz?** Bir servisin normal davranışından sapıp
-sapmadığını anlamak için.
+Ana proje dizinindeki `astronomy-shop` klasörüne geçin.
 
-### 📄 Logs
-
-Servislerin çalışırken oluşturduğu olay ve hata kayıtlarıdır.
-
-**Neden kullanıyoruz?** Bir problem oluştuğunda ne olduğunu ve hatayla
-ilgili ayrıntıları incelemek için.
-
-### 🔗 Traces
-
-Bir isteğin mikroservisler arasında izlediği yolu gösterir.
-
-``` text
-Frontend → Checkout → Payment → Shipping
-```
-
-**Neden kullanıyoruz?** Problemin hangi servis veya servisler arasındaki
-iletişim sırasında başladığını incelemek için.
-
-------------------------------------------------------------------------
-
-## 🛠️ Kullanılan Teknolojiler
-
-  -----------------------------------------------------------------------
-  Teknoloji                           RootLens'te Ne İşe Yarıyor?
-  ----------------------------------- -----------------------------------
-  **Astronomy Shop**                  Analiz edeceğimiz gerçekçi
-                                      mikroservis test ortamını sağlar
-
-  **Docker**                          Servisleri container'lar içerisinde
-                                      çalıştırır
-
-  **Docker Compose**                  Çok sayıdaki container'ı birlikte
-                                      başlatır ve yönetir
-
-  **OpenTelemetry**                   Mikroservislerden metrics, logs ve
-                                      traces telemetrisi toplar
-
-  **Prometheus**                      Metrik verilerini toplamak ve
-                                      sorgulamak için kullanılır
-
-  **OpenSearch**                      Log verilerini saklamak ve
-                                      sorgulamak için kullanılır
-
-  **Jaeger**                          Trace verilerini ve servisler
-                                      arasındaki istek akışını incelemek
-                                      için kullanılır
-
-  **Python / FastAPI**                RootLens analiz/backend
-                                      servislerinde kullanılır
-
-  **React**                           RootLens Dashboard arayüzünde
-                                      kullanılır
-
-  **Git / GitHub**                    Kod değişikliklerini,
-                                      dokümantasyonu ve proje gelişimini
-                                      takip etmek için kullanılır
-  -----------------------------------------------------------------------
-
-------------------------------------------------------------------------
-
-## 🐳 Docker Neden Kullanılıyor?
-
-Astronomy Shop tek bir programdan değil, birçok mikroservisten oluşur.
-Her servisi bilgisayara ayrı ayrı kurmak yerine servisleri **Docker
-container'ları** içerisinde çalıştırıyoruz.
-
-**Docker Compose** ise bu container'ların birlikte başlatılmasını,
-durdurulmasını ve yönetilmesini sağlar.
-
-``` text
-Docker         → Servisleri container olarak çalıştırır.
-Docker Compose → Container'ları birlikte yönetir.
-```
-
-------------------------------------------------------------------------
-
-# 💻 Kurulum ve Sistemi Çalıştırma
-
-## 1. Gerekli Programlar
-
-### Git
-
-Projeyi GitHub'dan bilgisayara almak için gereklidir.
-
-https://git-scm.com/
-
-Kontrol:
-
-``` bash
-git --version
-```
-
-### Docker Desktop
-
-Mikroservisleri ve diğer container'ları çalıştırmak için gereklidir.
-
-https://www.docker.com/products/docker-desktop/
-
-Kontrol:
-
-``` bash
-docker --version
-```
-
-Docker Compose kontrolü:
-
-``` bash
-docker compose version
-```
-
-------------------------------------------------------------------------
-
-## 2. Projeyi GitHub'dan İndirme
-
-Terminal, PowerShell veya VS Code terminalini açın:
-
-``` bash
-git clone https://github.com/betulyilddiz/GEDIK-2026-BITIRME-GRUP4.git
-```
-
-Proje klasörüne girin:
-
-``` bash
-cd GEDIK-2026-BITIRME-GRUP4
-```
-
-VS Code ile açmak için:
-
-``` bash
-code .
-```
-
-------------------------------------------------------------------------
-
-## 3. Docker'ın Çalıştığını Kontrol Etme
-
-Önce **Docker Desktop** açık olmalıdır.
-
-``` bash
-docker info
-```
-
-Docker bilgileri görüntüleniyorsa Docker çalışmaktadır.
-
-------------------------------------------------------------------------
-
-## 4. Astronomy Shop'u Çalıştırma
-
-Astronomy Shop klasörüne girin:
-
-``` bash
+```powershell
 cd astronomy-shop
-```
-
-Klasördeki Compose dosyalarını görmek için:
-
-``` bash
-dir
-```
-
-Repository'deki Astronomy Shop sürümünde tek `compose.yaml`
-kullanılıyorsa servisleri başlatmak için:
-
-``` bash
 docker compose up -d
 ```
 
-`-d`, container'ların terminali meşgul etmeden arka planda çalışmasını
-sağlar.
+Astronomy Shop'un kullandığı Compose yapılandırmasına göre ek dosyalar veya ortam ayarları gerekebilir.
 
-> **Not:** Astronomy Shop'un Compose yapısı sürüme göre değişebilir. Bu
-> repository içerisinde bulunan Compose dosyaları esas alınmalıdır.
+### Adım 2 — RootLens'i çalıştırma
 
-------------------------------------------------------------------------
+Ana proje dizinindeki `rootlens` klasörüne geçin.
 
-## 5. Sistemin Çalıştığını Kontrol Etme
-
-Çalışan container'ları görmek için:
-
-``` bash
-docker ps
-```
-
-Compose servislerinin durumunu görmek için:
-
-``` bash
-docker compose ps
-```
-
-Astronomy Shop çalıştığında frontend, checkout, payment, shipping,
-recommendation, product-catalog, OpenTelemetry Collector ve telemetri
-araçları gibi birçok servis/container çalışır.
-
-------------------------------------------------------------------------
-
-## 6. RootLens'i Çalıştırma
-
-Ana proje klasörüne dönün:
-
-``` bash
-cd ..
-```
-
-RootLens klasörüne girin:
-
-``` bash
+```powershell
 cd rootlens
-```
-
-`rootlens/`, **bizim geliştirdiğimiz analiz platformunu** içerir.
-
-RootLens klasöründeki mevcut Docker Compose yapılandırması kullanılarak
-Analyzer, Dashboard ve gerekli RootLens servisleri başlatılır.
-
-Çalışan RootLens container'larını kontrol etmek için:
-
-``` bash
-docker ps
-```
-
-> **Not:** RootLens'in kesin başlatma komutu repository içerisindeki
-> güncel Compose dosyasının adına göre kullanılmalıdır.
-
-------------------------------------------------------------------------
-
-## 7. Sistem Açıldıktan Sonra Ne Oluyor?
-
-``` text
-1. Astronomy Shop mikroservisleri çalışır.
-                     ↓
-2. Servisler birbirleriyle haberleşir.
-                     ↓
-3. Metrics, logs ve traces telemetrisi oluşur.
-                     ↓
-4. OpenTelemetry telemetriyi toplar.
-                     ↓
-5. Prometheus / OpenSearch / Jaeger üzerinden veriler incelenir.
-                     ↓
-6. RootLens Analyzer bu kaynaklardan verileri alır.
-                     ↓
-7. Veriler analiz edilir.
-                     ↓
-8. Anormal davranış tespit edilir.
-                     ↓
-9. Olası kök neden belirlenir.
-                     ↓
-10. Sonuç RootLens Dashboard'da gösterilir.
-```
-
-------------------------------------------------------------------------
-
-## 💥 Kontrollü Hata Senaryosu Nasıl Çalışacak?
-
-Normal durumda:
-
-``` text
-Kullanıcı
-   ↓
-Checkout
-   ↓
-Payment
-   ↓
-Sipariş başarılı
-```
-
-Örneğin Payment servisinde kontrollü bir yavaşlama veya hata
-oluşturulduğunda:
-
-``` text
-Payment Service
-      ↓
-Anormal davranış oluşur
-      ↓
-Telemetri verileri değişir
-      ↓
-RootLens verileri inceler
-      ↓
-Anomali tespit edilir
-      ↓
-Diğer telemetri kaynakları incelenir
-      ↓
-Olası kök neden belirlenir
-      ↓
-Dashboard'da gösterilir
-```
-
-Amaç yalnızca sistemde hata olduğunu göstermek değil, **problemin nerede
-başladığını ve olası nedenini belirlemektir.**
-
-------------------------------------------------------------------------
-
-## 📋 Docker'da İşimize Yarayacak Komutlar
-
-### Çalışan container'ları göster
-
-``` bash
-docker ps
-```
-
-### Tüm container'ları göster
-
-``` bash
-docker ps -a
-```
-
-### Compose servislerini göster
-
-``` bash
-docker compose ps
-```
-
-### Logları göster
-
-``` bash
-docker compose logs
-```
-
-### Logları canlı takip et
-
-``` bash
-docker compose logs -f
-```
-
-### Belirli bir container'ın logunu göster
-
-``` bash
-docker logs <container_adi>
-```
-
-### Servisleri yeniden başlat
-
-``` bash
-docker compose restart
-```
-
-### Servisleri durdur
-
-``` bash
-docker compose stop
-```
-
-### Compose ortamını kapat
-
-``` bash
-docker compose down
-```
-
-### Değişikliklerden sonra yeniden build ederek başlat
-
-``` bash
 docker compose up -d --build
 ```
 
-------------------------------------------------------------------------
+Çalışan servisleri kontrol etmek için:
 
-## ✅ Şu Ana Kadar Yapılanlar
-
-### Astronomy Shop
-
--   Mikroservis test ortamı hazırlandı.
--   Servisler Docker ortamında çalıştırıldı.
--   Servisler arası iletişim yapısı incelendi.
--   Gerçek telemetri üreten test ortamı oluşturuldu.
-
-### Telemetri
-
--   OpenTelemetry tabanlı telemetri altyapısı incelendi.
--   Prometheus erişimi test edildi.
--   OpenSearch erişimi test edildi.
--   Jaeger/trace entegrasyonu üzerinde çalışılmaktadır.
-
-### RootLens
-
--   RootLens Analyzer servisi oluşturuldu.
--   RootLens Dashboard oluşturuldu.
--   Gerçek telemetri kaynaklarına erişim üzerinde çalışıldı.
--   Kontrollü hata senaryoları için temel yapı oluşturuldu.
-
-### Proje Yönetimi
-
--   14 haftalık Gantt planı oluşturuldu.
--   Literatür araştırmasına başlandı.
--   Proje GitHub repository'sinde sürüm kontrolü altına alındı.
-
-------------------------------------------------------------------------
-
-## 🚀 Sonraki Hedefler
-
-``` text
-Mevcut mikroservis ve telemetri ortamı
-                ↓
-Metrics + Logs + Traces entegrasyonu
-                ↓
-Kontrollü hata senaryoları
-                ↓
-Normal / anormal davranış ayrımı
-                ↓
-Anomali tespit mekanizması
-                ↓
-Servis ilişkilerinin analizi
-                ↓
-Otomatik kök neden analizi
-                ↓
-RootLens Dashboard'da sonuçların gösterilmesi
-                ↓
-Test otomasyonu
-                ↓
-CI/CD
-                ↓
-Final sistem ve performans testleri
+```powershell
+docker compose ps
 ```
 
-------------------------------------------------------------------------
+### Adım 3 — API ve arayüzü kontrol etme
 
-## 📁 Repository Yapısı
+Geliştirme ortamında kullanılan adresler:
 
-``` text
-GEDIK-2026-BITIRME-GRUP4/
-│
-├── astronomy-shop/
-│   └── Analiz ettiğimiz OpenTelemetry mikroservis sistemi
-│
-├── rootlens/
-│   └── Bizim geliştirdiğimiz RootLens analiz platformu
-│
-├── RootLens_14_Haftalik_Gantt_Plani.xlsx
-│   └── 14 haftalık proje planı
-│
-├── RootLens_Literatur_Taramasi.xlsx
-│   └── Literatür araştırması
-│
-└── README.md
-    └── Proje açıklaması ve çalıştırma dokümantasyonu
+- RootLens arayüzü: `http://localhost:5173`
+- Analyzer API: `http://localhost:8002`
+- API dokümantasyonu: `http://localhost:8002/docs`
+
+Bu adresler Docker Compose port ayarlarına göre değişebilir.
+
+## 6. Beşinci Hafta — Telemetri Toplama ve İlk Analiz
+
+Beşinci haftanın amacı, farklı telemetri kaynaklarından alınan verileri analiz edilebilir hâle getirmektir.
+
+### Yapılan çalışmalar
+
+- Prometheus, OpenSearch ve Jaeger üzerinden veri toplama altyapısı
+- Toplanan örneklerin SQLite veritabanına kaydedilmesi
+- Veri kalitesinin kontrol edilmesi
+- Eksik veya geçersiz kayıtların incelenmesi
+- Başlangıç düzeyinde eşik tabanlı analiz
+
+### API uç noktaları
+
+| Uç nokta | Görevi |
+|---|---|
+| `POST /week5/collect` | Telemetri örneklerini toplar |
+| `GET /week5/samples` | Kaydedilen örnekleri listeler |
+| `GET /week5/quality` | Veri kalitesi bilgilerini gösterir |
+| `GET /week5/baseline` | Basit eşik tabanlı analiz gerçekleştirir |
+
+**Önemli:** Eşik tabanlı başlangıç analizi, eğitilmiş bir yapay zekâ anomali modeli değildir.
+
+## 7. Altıncı Hafta — Veri Birleştirme ve Etiketleme
+
+Altıncı haftanın amacı, farklı kaynaklardan gelen telemetri örneklerini ortak bir analiz veri kümesinde bir araya getirmektir.
+
+### Yapılan çalışmalar
+
+- Verilerin servis bazında gruplandırılması
+- Verilerin zaman pencerelerine ayrılması
+- Metrik, log ve trace bilgilerinin aynı analiz penceresinde değerlendirilmesi
+- Veri kümesinin kalite kontrolü
+- Kontrollü deneyler için normal/anomali etiketlerinin kaydedilmesi
+
+### API uç noktaları
+
+| Uç nokta | Görevi |
+|---|---|
+| `GET /week6/dataset` | Birleştirilmiş analiz pencerelerini üretir |
+| `GET /week6/quality` | Birleştirilmiş veri kalitesini gösterir |
+| `GET /week6/labels` | Kaydedilmiş deney etiketlerini listeler |
+| `POST /week6/labels` | Yeni deney etiketi kaydeder |
+
+### Veri eşleştirme
+
+Veriler, mümkün olduğunda gerçek olay zamanları kullanılarak ilgili zaman pencerelerine yerleştirilir.
+
+Ancak tüm kaynaklarda aynı doğrulukta zaman bilgisi bulunmayabilir. Bu nedenle zaman penceresi eşleştirmesi, kesin olay ilişkisi veya kök neden bağlantısı olarak değerlendirilmemelidir.
+
+`GET /week6/dataset` uç noktası veri kümesini dinamik olarak üretir; ayrı bir kalıcı birleşik tablo oluşturmaz.
+
+### Deney etiketleri
+
+Etiketler kontrollü test senaryolarına dayanır:
+
+- `normal`: Normal çalışma olarak işaretlenen deney
+- `anomaly`: Hata veya anormal davranış oluşturulan deney
+
+Bu etiketler kullanıcı tarafından kaydedilir. Sistem henüz otomatik kök neden etiketi üretmez.
+
+## 8. Kontrollü Hata Senaryoları
+
+Test ortamında özellikle ödeme servisi üzerinden kontrollü senaryolar uygulanmıştır.
+
+Örnek senaryolar:
+
+- Normal ödeme akışının gözlemlenmesi
+- `paymentFailure` özelliğiyle ödeme hatasının tetiklenmesi
+- Jaeger üzerinden `PaymentService/Charge` işleminin incelenmesi
+- İlgili zaman aralıklarının normal veya anomali olarak etiketlenmesi
+
+Bu deneyler, ileride geliştirilecek anomali tespiti ve kök neden analizi yöntemleri için örnek veri oluşturmayı amaçlar.
+
+**Not:** Bir trace içinde hata görülmemesi, uçtan uca sipariş işleminin başarıyla tamamlandığını tek başına kanıtlamaz.
+
+## 9. Veri Kalitesi ve Sınırlamalar
+
+Projenin mevcut sürümünde şu sınırlamalar bulunmaktadır:
+
+- Her zaman penceresinde üç telemetri kaynağının tamamı bulunmayabilir.
+- Bazı kayıtların servis bilgisi eksik olabilir.
+- Veri birleştirme zaman penceresi temellidir; kesin trace ilişkisi henüz kurulmamıştır.
+- Deney etiketleri manuel olarak kaydedilmektedir.
+- Otomatik anomali tespiti ve kök neden analizi henüz tamamlanmamıştır.
+- Eğitim ve değerlendirme için ayrı veri dışa aktarım süreci sonraki geliştirme adımlarındadır.
+
+## 10. Birim Testleri
+
+Analyzer kaynak kodunun bulunduğu klasörde:
+
+```powershell
+cd rootlens/services/analyzer
+python -m pytest -q test_week5.py test_week6.py
 ```
 
-------------------------------------------------------------------------
+Komutun çalışması için Python ortamında `pytest` ve gerekli proje bağımlılıklarının kurulu olması gerekir.
 
-## 🔗 Resmî Kaynaklar
+**Güncel doğrulama durumu:** Docker container'ında `pytest` kurulmuş ancak test dosyaları container içinde bulunamadığından bu ortamda testler çalıştırılamamıştır. Bu nedenle Docker içindeki birim testler için başarılı sonuç iddia edilmemektedir.
 
--   **OpenTelemetry:** https://opentelemetry.io/
--   **Astronomy Shop / OpenTelemetry Demo:**
-    https://github.com/open-telemetry/opentelemetry-demo
--   **OpenTelemetry Demo Dokümantasyonu:**
-    https://opentelemetry.io/docs/demo/
--   **Docker:** https://www.docker.com/
--   **Docker Compose:** https://docs.docker.com/compose/
--   **Prometheus:** https://prometheus.io/
--   **OpenSearch:** https://opensearch.org/
--   **Jaeger:** https://www.jaegertracing.io/
--   **FastAPI:** https://fastapi.tiangolo.com/
--   **React:** https://react.dev/
+## 11. Mevcut Durum ve Sonraki Çalışmalar
 
-------------------------------------------------------------------------
+### Tamamlanan geliştirmeler
 
-## 📌 Kısa Özet
+- Mikroservis test ortamının kurulması
+- Telemetri kaynaklarına erişim ve veri toplama altyapısı
+- Toplanan örneklerin saklanması
+- Veri kalitesi kontrolleri
+- Eşik tabanlı başlangıç analizi
+- Zaman pencerelerine göre veri birleştirme
+- Kontrollü deney etiketleme altyapısı
 
-> **Astronomy Shop üzerinde çalışan mikroservislerden telemetri verileri
-> üretilir. OpenTelemetry bu verileri toplar; Prometheus metrikleri,
-> OpenSearch logları ve Jaeger trace'leri incelememizi sağlar. RootLens
-> Analyzer bu kaynaklardan gelen verileri analiz ederek anormal
-> davranışı ve problemin olası kök nedenini belirlemeyi, RootLens
-> Dashboard ise sonucu kullanıcıya tek bir ekranda göstermeyi
-> hedefler.**
+### Planlanan geliştirmeler
+
+- Daha kapsamlı veri kümesi oluşturma
+- Otomatik anomali tespit yöntemi geliştirme
+- Servis bağımlılıklarını dikkate alan kök neden analizi
+- Anomali ve kök neden sonuçlarını değerlendirme
+- Dashboard üzerinde analiz sonuçlarını gösterme
+- Otomatik test ve CI/CD süreçlerini geliştirme
+
+## 12. Akademik Kapsam
+
+**Proje konusu:** Mikroservis Sistemlerinde Çok Kaynaklı Telemetri Verileri ile Anomali Tespiti ve Otomatik Kök Neden Analizi
+
+**Üniversite:** İstanbul Gedik Üniversitesi
+
+**Proje ekibi:**
+- Betül Yıldız
+- Fatıma Isalı
+- Muhammed Emir Tel
+
+**Danışman:** Dr. Öğr. Üyesi Hikmet Canlı
+
+Bu proje akademik araştırma ve geliştirme amacıyla hazırlanmıştır.
