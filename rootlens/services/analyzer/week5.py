@@ -36,7 +36,7 @@ def create_tables(db):
 def anomaly_rule(metric, value, threshold):
     """Baseline only: explicitly configured numeric threshold, not an AI model."""
     if value is None:
-        return {'status': 'no_data', 'anomaly': False, 'reason': 'Ölçüm yok'}
+        return {'status': 'no_data', 'anomaly': False, 'reason': 'Ãƒâ€“lÃƒÂ§ÃƒÂ¼m yok'}
 
     is_anomaly = float(value) > float(threshold)
     return {
@@ -44,7 +44,7 @@ def anomaly_rule(metric, value, threshold):
         'anomaly': is_anomaly,
         'reason': (
             f'{metric}: {value:.4g} > {threshold:.4g}'
-            if is_anomaly else f'{metric}: eşik aşılmadı'
+            if is_anomaly else f'{metric}: eÃ…Å¸ik aÃ…Å¸Ã„Â±lmadÃ„Â±'
         )
     }
 
@@ -75,7 +75,7 @@ async def fetch_snapshot(cfg, queries=None):
     queries = queries or {
         'up': 'up',
         'request_rate': 'sum by (service_name) (rate(http_server_duration_milliseconds_count[5m]))',
-        'error_rate': 'sum by (service_name) (rate(http_server_duration_milliseconds_count{http_status_code=~"5.."}[5m]))',
+        'error_rate': '(sum by (job) (rate(rpc_server_call_duration_seconds_count{rpc_response_status_code!="OK"}[5m])) or (sum by (job) (rate(rpc_server_call_duration_seconds_count[5m])) * 0))',
     }
 
     now = datetime.now(timezone.utc)
@@ -134,17 +134,17 @@ async def fetch_snapshot(cfg, queries=None):
             else 'partial' if prom_count else 'error' if prom_errors else 'empty'
         )
         if not prom_count:
-            output['issues'].append('Prometheus: sorgular gerçek metrik örneği döndürmedi')
+            output['issues'].append('Prometheus: sorgular gerÃƒÂ§ek metrik ÃƒÂ¶rneÃ„Å¸i dÃƒÂ¶ndÃƒÂ¼rmedi')
 
         # 2. OPENSEARCH: fetch actual documents, not only index metadata.
         # The demo's indices are named otel-logs-YYYY-MM-DD.
         try:
-            search_url = cfg['logs_url'].rstrip('/') + '/otel-logs-*/_search'
+            search_url = cfg['logs_url'].rstrip('/') + '/ss4o_logs-default-namespace/_search'
             # No fixed timestamp-field assumption: log schemas vary by collector.
             # Sort by _doc to avoid failing on unmapped timestamp fields.
             r = await client.post(
                 search_url,
-                json={'size': MAX_LOGS, 'query': {'match_all': {}}},
+                json={'size': MAX_LOGS, 'query': {'range': {'@timestamp': {'gte': 'now-15m'}}}, 'sort': [{'@timestamp': {'order': 'desc'}}]},
             )
             r.raise_for_status()
             hits = r.json().get('hits', {}).get('hits', [])
@@ -159,6 +159,7 @@ async def fetch_snapshot(cfg, queries=None):
                 service = (
                     doc.get('serviceName')
                     or doc.get('service_name')
+                    or resource.get('service.name')
                     or resource_attrs.get('service.name')
                     or 'unknown'
                 )
@@ -172,7 +173,7 @@ async def fetch_snapshot(cfg, queries=None):
                 })
             output['sources']['OpenSearch'] = 'ok' if hits else 'empty'
             if not hits:
-                output['issues'].append('OpenSearch: gerçek log dokümanı bulunamadı')
+                output['issues'].append('OpenSearch: gerÃƒÂ§ek log dokÃƒÂ¼manÃ„Â± bulunamadÃ„Â±')
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             output['sources']['OpenSearch'] = 'error'
             output['issues'].append(f'OpenSearch log search: {exc}')
@@ -187,7 +188,7 @@ async def fetch_snapshot(cfg, queries=None):
             # and call it trace data. Can be extended to other services later.
             if 'checkout' not in services:
                 output['sources']['Jaeger'] = 'empty'
-                output['issues'].append('Jaeger: checkout servisi listede bulunamadı')
+                output['issues'].append('Jaeger: checkout servisi listede bulunamadÃ„Â±')
             else:
                 params = {
                     'query.service_name': 'checkout',
@@ -243,7 +244,7 @@ async def fetch_snapshot(cfg, queries=None):
                         break
                 output['sources']['Jaeger'] = 'ok' if span_count else 'empty'
                 if not span_count:
-                    output['issues'].append('Jaeger: zaman aralığında gerçek span bulunamadı')
+                    output['issues'].append('Jaeger: zaman aralÃ„Â±Ã„Å¸Ã„Â±nda gerÃƒÂ§ek span bulunamadÃ„Â±')
         except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
             output['sources']['Jaeger'] = 'error'
             output['issues'].append(f'Jaeger trace API: {exc}')
