@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dist-lab/
+.env
+.env.*
+__pycache__/
+*.pyc
+.venv/
+venv/
+.vscode/
+rootlens/data/
