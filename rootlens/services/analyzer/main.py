@@ -3,31 +3,37 @@ import os
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Literal, Optional
+
+# Hafta 5 ve Hafta 6 Modülleri
 from week5 import create_tables, fetch_snapshot, persist_snapshot, anomaly_rule
 from week6 import create_week6_tables, preprocess, apply_labels, parse_time
 
+# Hafta 7 Yapay Zekâ Modülleri (Import Hatalarına Karşı Güvenli)
+try:
+    from week7_anomaly import detect_anomalies_isolation_forest
+    from week7_rca import find_root_cause
+except ImportError:
+    detect_anomalies_isolation_forest = None
+    find_root_cause = None
 
 DB_PATH = "data/rootlens.db"
 DEFAULT_TARGET = "Astronomy Shop Demo"
 DEFAULT_JAEGER_URL = "http://jaeger:16686/jaeger/ui"
 SOURCE_NAMES = ("Prometheus", "Jaeger", "OpenSearch")
 
-
 def now():
     return datetime.now(timezone.utc).isoformat()
-
 
 def connection():
     os.makedirs("data", exist_ok=True)
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     return db
-
 
 def initialise():
     with connection() as db:
@@ -74,11 +80,9 @@ def initialise():
                 now(),
             ),
         )
-
         create_tables(db)
         create_week6_tables(db)
-
-        # v4 used Jaeger's root route, although Astronomy Shop serves the UI below /jaeger/ui.
+        
         legacy = db.execute("SELECT jaeger_url FROM connections WHERE id = 1").fetchone()
         if legacy and legacy["jaeger_url"].rstrip("/") == "http://jaeger:16686":
             db.execute(
@@ -86,11 +90,9 @@ def initialise():
                 (DEFAULT_JAEGER_URL, now()),
             )
 
-
 def settings():
     with connection() as db:
         return dict(db.execute("SELECT * FROM connections WHERE id = 1").fetchone())
-
 
 def record(source, status, detail):
     with connection() as db:
@@ -99,15 +101,12 @@ def record(source, status, detail):
             (now(), source, status, detail),
         )
 
-
 def url(base, suffix):
     return f"{base.rstrip('/')}{suffix}"
-
 
 async def collect():
     cfg = settings()
     result = {"prometheus": False, "jaeger": False, "logs": False}
-
     async with httpx.AsyncClient(timeout=6) as client:
         try:
             response = await client.get(
@@ -120,7 +119,6 @@ async def collect():
             result["prometheus"] = True
         except (httpx.HTTPError, ValueError) as exc:
             record("Prometheus", "unavailable", f"Metrikler sorgulanamadı: {exc}")
-
         try:
             response = await client.get(url(cfg["jaeger_url"], "/"))
             response.raise_for_status()
@@ -128,7 +126,6 @@ async def collect():
             result["jaeger"] = True
         except httpx.HTTPError as exc:
             record("Jaeger", "unavailable", f"Trace kaynağına ulaşılamadı: {exc}")
-
         try:
             response = await client.get(url(cfg["logs_url"], "/_cat/indices"), params={"format": "json"})
             response.raise_for_status()
@@ -136,9 +133,7 @@ async def collect():
             result["logs"] = True
         except (httpx.HTTPError, ValueError) as exc:
             record("OpenSearch", "unavailable", f"Loglar sorgulanamadı: {exc}")
-
     return result
-
 
 async def watcher():
     while True:
@@ -148,7 +143,6 @@ async def watcher():
             pass
         await asyncio.sleep(max(10, settings()["poll_seconds"]))
 
-
 @asynccontextmanager
 async def lifespan(app):
     initialise()
@@ -156,15 +150,16 @@ async def lifespan(app):
     yield
     task.cancel()
 
-
 app = FastAPI(title="RootLens", lifespan=lifespan)
+
+# CORS ayarları tüm geliştirme origin'leri için esnetildi
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 class ConnectionForm(BaseModel):
     name: str
@@ -173,16 +168,13 @@ class ConnectionForm(BaseModel):
     logs_url: str
     poll_seconds: int = 30
 
-
 @app.get("/health")
 def health():
     return {"status": "ok", "mode": "observability-only"}
 
-
 @app.get("/connection")
 def get_connection():
     return settings()
-
 
 @app.put("/connection")
 def update_connection(form: ConnectionForm):
@@ -202,11 +194,9 @@ def update_connection(form: ConnectionForm):
         )
     return settings()
 
-
 @app.post("/collect/now")
 async def collect_now():
     return await collect()
-
 
 @app.get("/dashboard")
 def dashboard():
@@ -220,7 +210,6 @@ def dashboard():
             dict(row)
             for row in db.execute("SELECT * FROM incidents ORDER BY id DESC LIMIT 20").fetchall()
         ]
-
     latest = {}
     for row in observations:
         latest.setdefault(row["source"], row)
@@ -234,7 +223,6 @@ def dashboard():
     ]
     connected = sum(item["status"] == "connected" for item in sources)
     state = "healthy" if connected == len(SOURCE_NAMES) else "attention" if connected else "waiting"
-
     return {
         "target": cfg["name"],
         "poll_seconds": cfg["poll_seconds"],
@@ -244,19 +232,18 @@ def dashboard():
         "last_checked": observations[0]["created_at"] if observations else None,
         "mode": "observability-only",
         "ai": {
-            "status": "planned",
-            "label": "Sonraki aşama",
-            "description": "Bu ilk sürümde yapay zekâ modeli aktif değildir. RootLens şu an gerçek telemetriyi toplar ve kaynakların erişilebilirliğini gösterir.",
+            "status": "active" if detect_anomalies_isolation_forest else "planned",
+            "label": "AI Katmanı Aktif" if detect_anomalies_isolation_forest else "Sonraki aşama",
+            "description": "RootLens gerçek zamanlı telemetri verilerini toplar ve Isolation Forest algoritması ile anomali analizi gerçekleştirir.",
             "next_steps": [
                 "Kural tabanlı anomali eşikleri",
-                "Normal davranışı öğrenen anomali modeli",
+                "Isolation Forest ile anomali tespiti",
                 "Metrik, log ve trace kanıtlarıyla otomatik kök neden açıklaması",
             ],
         },
     }
 
-
-# Week 5: live, persisted baseline dataset (independent of the dashboard UI).
+# --- HAFTA 5 UÇ NOKTALARI ---
 @app.post("/week5/collect")
 async def week5_collect():
     snapshot = await fetch_snapshot(settings())
@@ -264,14 +251,12 @@ async def week5_collect():
         run_id = persist_snapshot(db, snapshot)
     return {"run_id": run_id, **snapshot}
 
-
 @app.get("/week5/samples")
 def week5_samples(limit: int = 100):
     limit = min(max(limit, 1), 1000)
     with connection() as db:
         rows = db.execute("SELECT * FROM telemetry_samples ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
     return [{**dict(r), "payload": __import__("json").loads(r["payload"])} for r in rows]
-
 
 @app.get("/week5/quality")
 def week5_quality():
@@ -284,10 +269,8 @@ def week5_quality():
             "by_source": by_source, "last_run": dict(last_run) if last_run else None,
             "note": "Kaynak erişimi ile gerçek log/trace içeriği doğrulaması farklıdır."}
 
-
 @app.get("/week5/baseline")
 def week5_baseline(metric: str = "request_rate", threshold: float = 10.0, limit: int = 100):
-    # Explicit threshold; demonstration only, not a trained anomaly model.
     limit = min(max(limit, 1), 1000)
     with connection() as db:
         rows = db.execute("SELECT * FROM telemetry_samples WHERE metric=? ORDER BY id DESC LIMIT ?", (metric, limit)).fetchall()
@@ -295,11 +278,7 @@ def week5_baseline(metric: str = "request_rate", threshold: float = 10.0, limit:
             "results": [{"service": r["service"], "collected_at": r["collected_at"],
                          "value": r["value"], **anomaly_rule(metric, r["value"], threshold)} for r in rows]}
 
-
-# Week 6: cleaning, service/time alignment, explicit experiment labels.
-from fastapi import HTTPException
-from typing import Literal, Optional
-
+# --- HAFTA 6 UÇ NOKTALARI ---
 class ExperimentLabel(BaseModel):
     start_at: str
     end_at: str
@@ -307,7 +286,6 @@ class ExperimentLabel(BaseModel):
     label: Literal['normal', 'anomaly']
     root_cause_service: Optional[str] = None
     scenario: str
-
 
 @app.post('/week6/labels')
 def week6_add_label(item: ExperimentLabel):
@@ -326,12 +304,10 @@ def week6_add_label(item: ExperimentLabel):
            (item.root_cause_service or '').strip() or None, item.scenario.strip(), now()))
         return {'id': cursor.lastrowid, 'status': 'saved', 'note': 'Etiket deney kaydıdır; model tahmini değildir.'}
 
-
 @app.get('/week6/labels')
 def week6_labels():
     with connection() as db:
         return [dict(r) for r in db.execute('SELECT * FROM experiment_labels ORDER BY id DESC LIMIT 500')]
-
 
 @app.get('/week6/dataset')
 def week6_dataset(bucket_seconds: int = 60, limit: int = 5000):
@@ -340,7 +316,6 @@ def week6_dataset(bucket_seconds: int = 60, limit: int = 5000):
     if not 1 <= limit <= 20000:
         raise HTTPException(422, 'limit 1-20000 arasında olmalı')
     with connection() as db:
-        # Latest observations; bounded for reproducible, responsive demo.
         rows = [dict(r) for r in db.execute('SELECT * FROM telemetry_samples ORDER BY id DESC LIMIT ?', (limit,))]
         labels = [dict(r) for r in db.execute('SELECT * FROM experiment_labels')]
     windows, stats = preprocess(rows, bucket_seconds)
@@ -349,7 +324,6 @@ def week6_dataset(bucket_seconds: int = 60, limit: int = 5000):
             'statistics': stats, 'windows': windows,
             'note': 'Sadece kaydedilmiş gerçek örnekler. all/unknown servisleri eşleştirmeye alınmaz. '
                     'Eksik kaynaklar açıkça belirtilir; üretilmez. Etiketler yalnızca manuel deney kayıtlarından gelir.'}
-
 
 @app.get('/week6/quality')
 def week6_quality(bucket_seconds: int = 60):
@@ -361,3 +335,32 @@ def week6_quality(bucket_seconds: int = 60):
             'unlabeled_windows': sum(w['label'] == 'unlabeled' for w in windows),
             'conflicting_label_windows': sum(w['label'] == 'conflict' for w in windows),
             'warning': 'Kaynak erişimi, gerçek log/trace olaylarının toplandığını kanıtlamaz.'}
+
+# --- HAFTA 7 YAPAY ZEKÂ (ANOMALİ TESPİTİ VE KÖK NEDEN) UÇ NOKTALARI ---
+@app.get('/week7/anomalies')
+def get_ai_anomalies(bucket_seconds: int = 60):
+    if detect_anomalies_isolation_forest is None:
+        raise HTTPException(500, "week7_anomaly.py modülü bulunamadı.")
+    data = week6_dataset(bucket_seconds=bucket_seconds)
+    windows = data.get("windows", [])
+    anomalies = detect_anomalies_isolation_forest(windows)
+    return {
+        "status": "success",
+        "algorithm": "Isolation Forest",
+        "total_windows_analyzed": len(windows),
+        "anomalies_found": len(anomalies),
+        "anomalies": anomalies
+    }
+
+@app.get('/week7/rca')
+def get_ai_root_cause(bucket_seconds: int = 60):
+    if detect_anomalies_isolation_forest is None or find_root_cause is None:
+        raise HTTPException(500, "week7_anomaly.py veya week7_rca.py modülü bulunamadı.")
+    data = week6_dataset(bucket_seconds=bucket_seconds)
+    windows = data.get("windows", [])
+    anomalies = detect_anomalies_isolation_forest(windows)
+    rca_results = find_root_cause(anomalies)
+    return {
+        "status": "success",
+        "analysis": rca_results
+    }

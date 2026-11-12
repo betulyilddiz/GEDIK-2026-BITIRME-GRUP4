@@ -12,8 +12,9 @@ from pydantic import BaseModel
 from analysis import analyze
 from week5 import create_tables, fetch_snapshot, persist_snapshot, anomaly_rule
 from week6 import create_week6_tables, preprocess, apply_labels, parse_time
+from week7_anomaly import detect_anomalies_isolation_forest
+from week7_rca import find_root_cause
 from week7 import detect_latency_anomalies
-
 
 DB_PATH = os.getenv("ROOTLENS_DB_PATH", "data/rootlens.db")
 DEFAULT_TARGET = "Astronomy Shop Demo"
